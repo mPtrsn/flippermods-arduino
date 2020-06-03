@@ -10,13 +10,14 @@
 #include "StompClient.h"
 #include <Arduino_JSON.h>
 #include <HTTPClient.h>
-
+#include <MD5.h>
 
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL343.h>
 
 #define SERIAL Serial
+#define PIN_AP 32
 
 const char* cert = \
                    "-----BEGIN CERTIFICATE-----"
@@ -59,7 +60,7 @@ const char* cert = \
 
 Adafruit_ADXL343 accel = Adafruit_ADXL343(12345);
 
-bool debug = true;
+
 
 bool useWSS                       = false;
 const char* ws_host               = "api.twistways.com";
@@ -67,12 +68,10 @@ const int ws_port                 = 6565;
 const char* ws_baseurl            = "/a/";
 
 char* authString = "Basic YWRtaW46dGVzdA==";
-char username[40];
+char username[40]; // TODO [40]
 char password[40];
 
-const int PIN_AP = 32;
 
-bool auth = true;
 int sensorId = -1;
 
 bool shouldSaveConfig;
@@ -132,7 +131,6 @@ void setupConfig() {
 
         configFile.readBytes(buf.get(), size);
         JSONVar json = JSON.parse(buf.get());
-        //json.printTo(Serial);
 
         SERIAL.println("\nparsed json");
         strcpy(username, json["username"]);
@@ -143,22 +141,23 @@ void setupConfig() {
   } else {
     SERIAL.println("failed to mount FS");
   }
-  //end read
-  SERIAL.print("FS username:");
-  SERIAL.println(username);
-  SERIAL.print("FS password:");
-  SERIAL.println(password);
-
 }
 
 void saveData() {
   SERIAL.println("Trying to save data!");
   //save the custom parameters to FS
   if (shouldSaveConfig) {
+    unsigned char* hash=MD5::make_hash(password);
+    //generate the digest (hex encoding) of our hash
+    char *md5str = MD5::make_digest(hash, 16);
+    free(hash);
+    //print it on our serial monitor
+    Serial.println(md5str);
+  
     Serial.println("saving config");
     JSONVar json;
     json["username"] = username;
-    json["password"] = password;
+    json["password"] = md5str;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -169,6 +168,7 @@ void saveData() {
     json.printTo(configFile);
     configFile.close();
     //end save
+
   }
 }
 
@@ -179,10 +179,7 @@ void setupWifi(bool reset) {
   WiFiManagerParameter custom_password("password", "password", password, 40);
 
   if (reset) {
-    //WiFi.disconnect();
     wifiManager.resetSettings();
-    //ESP.restart();
-    //delay(5000);
   }
 
   wifiManager.setAPCallback(configModeCallback);
@@ -252,14 +249,13 @@ void getUserId() {
       SERIAL.println(response);
       JSONVar myObject = JSON.parse(response);
       sensorId = (int)myObject["id"];
-
+      SERIAL.println(sensorId);
     } else {
       SERIAL.print("Error on sending POST: ");
       SERIAL.println(httpResponseCode);
       delay(2000);
     }
   } else {
-    // GET USER
     // restart AP
     setupWifi(true);
   }
@@ -297,17 +293,17 @@ void sendData() {
   float y = event.acceleration.y;
   if (x < 0 ) x *= -1;
   if (y < 0 ) y *= -1;
-  float res = x + y;
-  float tiltValue = map(res, 0.0, 7.0, 0.0, 1000.0);
-  if (tiltValue > 10) {
+  float res = (x + y) * 100;
+  
+  if (res > 150) {
     SERIAL.print("Acc x: ");SERIAL.print(x);
     SERIAL.print("   y: ");SERIAL.print(y);
     SERIAL.print("   res: ");SERIAL.println(res);
-    SERIAL.print("   mapped: ");SERIAL.println(tiltValue);
-    stomper.sendMessage("/app/data/" + String(sensorId), "{\\\"id\\\":\\\"" + String(sensorId) + "\\\",\\\"number\\\":" + String(tiltValue) + "}");
+
+    stomper.sendMessage("/app/data/" + String(sensorId), "{\\\"id\\\":\\\"" + String(sensorId) + "\\\",\\\"number\\\":" + String(res) + "}");
   }
 }
-//callback que indica que o ESP entrou no modo AP
+
 void configModeCallback (WiFiManager *myWiFiManager) {
   SERIAL.println("Entered config mode");
   SERIAL.println(WiFi.softAPIP());
@@ -315,25 +311,7 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 }
 
 void saveConfigCallback () {
-  SERIAL.println("Should save config");
   SERIAL.println(WiFi.softAPIP()); //imprime o IP do AP
-  SERIAL.println(username);
-  SERIAL.println(password);
   shouldSaveConfig = true;
-  /*
-    // encoding
-    char *inputString = strcat(username, password);
-    int inputStringLength = sizeof(inputString);
-
-    Serial.print("Input string is:\t");
-    Serial.println(inputString);
-
-    Serial.println();
-
-    int encodedLength = Base64.encodedLength(inputStringLength);
-    char encodedString[encodedLength];
-    Base64.encode(encodedString, inputString, inputStringLength);
-    Serial.print("Encoded string is:\t");
-    Serial.println(encodedString);
-  */
+  sensorId = -1;
 }
